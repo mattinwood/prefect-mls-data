@@ -1,9 +1,7 @@
 import asyncio
 import configparser
 from pydantic import BaseModel, Field, AliasPath, model_validator
-from pydantic.dataclasses import dataclass
 import httpx
-import json
 import sys
 from typing import Dict, NewType, Optional
 from prefect_mls_data.tools.logconfig import get_logger
@@ -148,7 +146,8 @@ class FixtureDetails(BaseModel):
 
     @model_validator(mode='after')
     def isooutput(self):
-        self.kickoff = self.kickoff.isoformat()
+        if type(self.kickoff) == datetime:
+            self.kickoff = self.kickoff.isoformat()
         return self
 
 
@@ -190,7 +189,7 @@ class LineupDetails(BaseModel):
     formation_field: str|None
     formation_position: int|None
     position: str = Field(alias=AliasPath('position', 'name'))
-    detailedposition: str = Field(alias=AliasPath('detailedposition', 'name'), default=None)
+    detailed_position: str = Field(alias=AliasPath('detailedposition', 'name'), default=None)
     starting_lineup: str = Field(alias=AliasPath('type', 'name'))
 
     @model_validator(mode='after')
@@ -235,7 +234,7 @@ class EventDetails(BaseModel):
     addition: str|None
     injured: bool|None
     on_bench: bool|None
-    type: str = Field(alias=AliasPath('type', 'name'))
+    event_type: str = Field(alias=AliasPath('type', 'name'))
     subtype: str|None = Field(alias=AliasPath('subtype', 'name'), default=None)
     sort_order: int
 
@@ -254,7 +253,7 @@ class TimelineDetails(BaseModel):
     addition: str | None
     injured: bool | None
     on_bench: bool | None
-    type: str = Field(alias=AliasPath('type', 'name'), default=None)
+    event_type: str = Field(alias=AliasPath('type', 'name'), default=None)
     subtype: str | None = Field(alias=AliasPath('subtype', 'name'), default=None)
     sort_order: int
 
@@ -269,7 +268,7 @@ class Comment(BaseModel):
     extra_minute: int | None
     is_goal: bool
     is_important: bool
-    order: int
+    sort_order: int = Field(alias='order')
 
 class Comments(BaseModel):
     comments: list[Comment]
@@ -280,7 +279,7 @@ class Trend(BaseModel):
     participant: str = Field(alias=AliasPath('participant', 'name'))
     minute: int|None
     period: int|None = Field(alias=AliasPath('period','type_id'))
-    type: str = Field(alias=AliasPath('type', 'name'))
+    trend_type: str = Field(alias=AliasPath('type', 'name'))
     value: Decimal
 
 class Trends(BaseModel):

@@ -5,6 +5,7 @@ from prefect_mls_data.tools import sportmonk
 from pydantic import BaseModel
 from datetime import datetime
 from time import sleep
+from prefect_mls_data.dbflows import persist_game
 
 
 @task(name='download-single-fixture', log_prints=True)
@@ -127,10 +128,29 @@ def download_game(game_id: int = 19353071):
     xg = xg_class.submit(game)
     scores = score_class.submit(game)
 
-    s = dummy_step(wait_for=[
+    wait([
         fixture, participant, weather, lineup, performance,
         events, timeline, comments, trends, statistics,
         metadata, formations, coordinates, xg, scores
-    ], game_id=game_id, game_name=fixture.result().game_name)
+    ])
+
+    ### Persist to PostgreSQL as a sub-flow
+    persist_game(
+        fixture=fixture.result(),
+        participants=participant.result(),
+        weather=weather.result(),
+        lineups=lineup.result(),
+        performance=performance.result(),
+        events=events.result(),
+        timeline=timeline.result(),
+        comments=comments.result(),
+        trends=trends.result(),
+        statistics=statistics.result(),
+        metadata=metadata.result(),
+        formations=formations.result(),
+        coordinates=coordinates.result(),
+        xg=xg.result(),
+        scores=scores.result(),
+    )
 
     #TODO: Add more Round details
