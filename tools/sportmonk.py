@@ -30,6 +30,7 @@ def paginated_results(
         endpoint: str,
         includes: list[str] = None,
         filters: Dict[str, str] = None,
+        selects: list[str] = None,
         pagination: str = '') -> dict:
     """
     Fetches and combines data from all pages of a paginated API endpoint.
@@ -57,6 +58,8 @@ def paginated_results(
         params['includes'] = ';'.join(includes)
     if filters:
         params['filters'] = ';'.join(filters)
+    if selects:
+        params['selects'] = ';'.join(selects)
 
     while True:
         LOGGER.info(f'Pulling page {len(all_records) + 1} of results')
@@ -64,8 +67,10 @@ def paginated_results(
         LOGGER.info(f'Safe Request URL: {httpx.URL(url, params=params)}')
         response = client.get(url, params=params | {'api_token': TOKEN})
 
-        response.raise_for_status()
         data = response.json()
+        if 'data' not in data.keys():
+            LOGGER.warning(f'{data["message"]}')
+            return None
 
         LOGGER.info(f'Returned {len(data['data']) if type(data['data']) == list else 1} records')
         all_records.append(data.get('data', []))
@@ -123,7 +128,7 @@ def get_fixture_details(fixture_id: int, includes: list=None, filters: list=None
             'aggregate', 'scores.participant'
         ]
         filters = ['scoreTypes:1525']
-    with httpx.Client() as client:
+    with httpx.Client(timeout=30) as client:
         fixture = paginated_results(
             client,
             f'fixtures/{fixture_id}',
@@ -132,7 +137,28 @@ def get_fixture_details(fixture_id: int, includes: list=None, filters: list=None
         )
 
     return fixture
-    # TODO: Add Data classes
+
+
+def get_fixture_ids(date_range_start=None, date_range_end=None):
+    if not all([date_range_start, date_range_end]):
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+        date_range_start = (date.today() - relativedelta(days=14)).isoformat()
+        print(f'Date Range Start: {date_range_start}')
+        date_range_end = date.today().isoformat()
+        print(f'Date Range Start: {date_range_end}')
+    with httpx.Client() as client:
+        response = paginated_results(
+            client,
+            f'fixtures/between/{date_range_start}/{date_range_end}',
+            selects= ['id'],
+            filters = ['fixtureLeagues:779', 'fixtureStates:5']
+        )
+    if response is None:
+        return None
+    else:
+        return [fixture['id'] for sublist in response['data'] for fixture in sublist]
+
 
 ### Pydantic Data Classes
 class FixtureDetails(BaseModel):
@@ -185,11 +211,11 @@ class LineupDetails(BaseModel):
     lineup_id: int = Field(alias='id')
     fixture_id: int
     player_name: str
-    player_id: int
+    player_id: int|None
     formation_field: str|None
     formation_position: int|None
-    position: str = Field(alias=AliasPath('position', 'name'))
-    detailed_position: str = Field(alias=AliasPath('detailedposition', 'name'), default=None)
+    position: str|None = Field(alias=AliasPath('position', 'name'), default=None)
+    detailed_position: str|None = Field(alias=AliasPath('detailedposition', 'name'), default=None)
     starting_lineup: str = Field(alias=AliasPath('type', 'name'))
 
     @model_validator(mode='after')
@@ -206,7 +232,8 @@ class FixtureLineups(BaseModel):
 class PerformanceDetails(BaseModel):
     performance_id: int = Field(alias='id')
     fixture_id: int
-    player_id: int
+    lineup_id: int|None
+    player_id: int|None
     statistic: str = Field(alias=AliasPath('type', 'name'))
     value: Decimal|int|bool = Field(alias=AliasPath('data', 'value'))
 
@@ -227,7 +254,8 @@ class EventDetails(BaseModel):
     event_id: int = Field(alias='id')
     fixture_id: int
     participant_id: int
-    player_id: int
+    player_id: int|None
+    related_player_id: int|None
     minute: int
     extra_minute: int|None
     info: str|None
@@ -246,7 +274,8 @@ class TimelineDetails(BaseModel):
     event_id: int = Field(alias='id')
     fixture_id: int
     participant_id: int
-    player_id: int | None
+    player_id: int|None
+    related_player_id: int|None
     minute: int | None
     extra_minute: int | None
     info: str | None
@@ -290,7 +319,14 @@ class Statistic(BaseModel):
     fixture_id: int
     participant: str = Field(alias=AliasPath('participant', 'name'))
     statistic: str = Field(alias=AliasPath('type', 'name'))
-    value: int = Field(alias=AliasPath('data', 'value'))
+    value: int|None = Field(alias=AliasPath('data', 'value'))
+
+    @model_validator(mode='after')
+    def coerce_nulls(self):
+        if not self.value:
+            self.value = 0
+        self.value = str(self.value)
+        return self
 
 class Statistics(BaseModel):
     statistics: list[Statistic]

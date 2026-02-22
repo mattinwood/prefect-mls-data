@@ -2,155 +2,82 @@ from prefect import flow, task
 from prefect.logging import get_run_logger
 from prefect.futures import wait
 from prefect_mls_data.tools import sportmonk
-from pydantic import BaseModel
-from datetime import datetime
-from time import sleep
-from prefect_mls_data.dbflows import persist_game
+from prefect_mls_data.dbflows import (
+    extract_game_rows, merge_all_game_rows,
+    batch_delete_fixture_data, batch_write_fixture_data,
+)
 
 
-@task(name='download-single-fixture', log_prints=True)
-def request_fixture(game_id: int) -> dict:
-    response = sportmonk.get_fixture_details(fixture_id=game_id)
-    assert len(response['data']) == 1, f'Expected 1 fixture, got {len(response["data"])}'
-    sleep(3)
-    return response['data'][0]
+def build_game_models(game: dict) -> dict:
+    """Convert raw API response dict into all 15 Pydantic models."""
+    return {
+        'fixture': sportmonk.FixtureDetails(**game),
+        'participants': sportmonk.FixtureParticipants(
+            participants=[sportmonk.ParticipantDetails(**p, fixture_id=game['id']) for p in game['participants']]
+        ),
+        'weather': sportmonk.FixtureWeather(**game['weatherreport']) if game.get('weatherreport') else None,
+        'lineups': sportmonk.FixtureLineups(lineup=game['lineups']),
+        'performance': sportmonk.FixturePerformance(performance=game['lineups']),
+        'events': sportmonk.EventList(events=game['events']),
+        'timeline': sportmonk.Timeline(timeline=game['timeline']),
+        'comments': sportmonk.Comments(comments=game['comments']),
+        'trends': sportmonk.Trends(trends=game['trends']),
+        'statistics': sportmonk.Statistics(statistics=game['statistics']),
+        'metadata': sportmonk.Metadata(metadata=game['metadata']),
+        'formations': sportmonk.Formations(formations=game['formations']),
+        'coordinates': sportmonk.Coordinates(coordinates=game['ballcoordinates']),
+        'xg': sportmonk.FixtureXG(xg=game['xgfixture']),
+        'scores': sportmonk.Scores(scores=game['scores']),
+    }
 
 
-@task(name='fixture-class')
-def fixture_class(fixture: dict) -> BaseModel:
-    data = sportmonk.FixtureDetails(**fixture)
-    sleep(3)
-    return data
+@task(name='retrieve-fixture-ids', retries=3)
+def retrieve_fixture_ids(date_range_start=None, date_range_end=None):
+    return sportmonk.get_fixture_ids(date_range_start, date_range_end)
 
-@task(name='participant-class')
-def participant_class(fixture: dict) -> BaseModel:
-    data = sportmonk.FixtureParticipants(
-        participants=[sportmonk.ParticipantDetails(**p, fixture_id=fixture['id']) for p in fixture['participants']]
-    )
-    sleep(3)
-    return data
 
-@task(name='weather-class')
-def weather_class(fixture: dict) -> BaseModel:
-    data = sportmonk.FixtureWeather(**fixture['weatherreport'])
-    sleep(3)
-    return data
-
-@task(name='lineup-class')
-def lineup_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.FixtureLineups(lineup=fixture['lineups'])
-
-@task(name='performance-class')
-def performance_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.FixturePerformance(performance=fixture['lineups'])
-
-@task(name='events-class')
-def events_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.EventList(events=fixture['events'])
-
-@task(name='timeline-class')
-def timeline_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Timeline(timeline=fixture['timeline'])
-
-@task(name='comment-class')
-def comment_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Comments(comments=fixture['comments'])
-
-@task(name='trends-class')
-def trends_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Trends(trends=fixture['trends'])
-
-@task(name='statistics-class')
-def statistics_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Statistics(statistics=fixture['statistics'])
-
-@task(name='metadata-class')
-def metadata_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Metadata(metadata=fixture['metadata'])
-
-@task(name='formation-class')
-def formation_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Formations(formations=fixture['formations'])
-
-@task(name='coordinate-class')
-def coordinate_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Coordinates(coordinates=fixture['ballcoordinates'])
-
-@task(name='xg-class')
-def xg_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.FixtureXG(xg=fixture['xgfixture'])
-
-@task(name='score-class')
-def score_class(fixture: dict) -> BaseModel:
-    sleep(3)
-    return sportmonk.Scores(scores=fixture['scores'])
-
-@task(name='dummy')
-def dummy_step(game_id='Unknown ID', game_name='Unknown Game'):
-    sleep(3)
-    get_run_logger().info(f'Successfully extracted data for game {game_id}: {game_name}')
-    pass
-
-@flow(name='download-individual-game-by-id', log_prints=True)
-def download_game(game_id: int = 19353071):
-    ### Overwrite the logger in the sportmonks module to the Prefect one
+@task(name='download-single-game', retries=3)
+def download_single_game(game_id: int) -> dict:
     logger = get_run_logger()
     sportmonk.set_logger(logger)
 
-    ### Retrieve the fixture data response
-    game = request_fixture(game_id)
+    response = sportmonk.get_fixture_details(fixture_id=game_id)
+    assert len(response['data']) == 1, f'Expected 1 fixture, got {len(response["data"])}'
+    game = response['data'][0]
 
-    ### Create Pydantic models for each of the fixture subcategories
-    fixture = fixture_class.submit(game)
-    participant = participant_class.submit(game)
-    weather = weather_class.submit(game)
-    lineup = lineup_class.submit(game)
-    performance = performance_class.submit(game)
-    events = events_class.submit(game)
-    timeline = timeline_class.submit(game)
-    comments = comment_class.submit(game)
-    trends = trends_class.submit(game)
-    metadata = metadata_class.submit(game)
-    statistics = statistics_class.submit(game)
-    formations = formation_class.submit(game)
-    coordinates = coordinate_class.submit(game)
-    xg = xg_class.submit(game)
-    scores = score_class.submit(game)
+    logger.info(f'Downloaded game {game_id}: {game['name']}')
+    models = build_game_models(game)
+    logger.info(f'Build {len(models)} for game {game_id}: {models["fixture"].game_name}')
+    return models
 
-    wait([
-        fixture, participant, weather, lineup, performance,
-        events, timeline, comments, trends, statistics,
-        metadata, formations, coordinates, xg, scores
-    ])
 
-    ### Persist to PostgreSQL as a sub-flow
-    persist_game(
-        fixture=fixture.result(),
-        participants=participant.result(),
-        weather=weather.result(),
-        lineups=lineup.result(),
-        performance=performance.result(),
-        events=events.result(),
-        timeline=timeline.result(),
-        comments=comments.result(),
-        trends=trends.result(),
-        statistics=statistics.result(),
-        metadata=metadata.result(),
-        formations=formations.result(),
-        coordinates=coordinates.result(),
-        xg=xg.result(),
-        scores=scores.result(),
-    )
+@flow(name='download-individual-game-by-id')
+def download_game(game_id: int = 19353071):
+    """Standalone flow for downloading and persisting a single game."""
+    data = download_single_game(game_id)
+    fixture_id, all_rows = extract_game_rows(data)
+    batch_delete_fixture_data([fixture_id])
+    batch_write_fixture_data(all_rows)
 
-    #TODO: Add more Round details
+
+@flow(name='download-all-games', log_prints=True)
+def download_all_games(date_range_start=None, date_range_end=None):
+    """Download all games in a date range. Two-batch parallel execution."""
+    logger = get_run_logger()
+    sportmonk.set_logger(logger)
+    ids = retrieve_fixture_ids(date_range_start, date_range_end)
+    if ids:
+        logger.info(f'Downloading {len(ids)} games')
+
+        # Batch 1: Download all games in parallel
+        download_futures = [download_single_game.submit(game_id) for game_id in ids]
+        wait(download_futures)
+
+        # Batch 2: Extract rows from each game in parallel (no DB access)
+        extract_futures = [extract_game_rows.submit(f.result()) for f in download_futures]
+        wait(extract_futures)
+
+        # Batch 3: Merge all extracted rows by table, then delete and write in single transactions
+        fixture_ids, merged_rows = merge_all_game_rows([f.result() for f in extract_futures])
+        batch_delete_fixture_data(fixture_ids)
+        batch_write_fixture_data(merged_rows)
